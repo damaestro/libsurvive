@@ -62,31 +62,33 @@ static size_t add_scenes(struct global_scene_solver *gss, SurviveObject *so) {
 
 	SurviveSensorActivations *activations = &so->activations;
 
-	// TT clean up scenes with invalid SurviveObjects
-	unsigned int free_idx = 0;
-	for (int i = 0; i < GSS_NUM_STORED_SCENES; i++) {
-		if (gss->scenes[i].so == NULL) {
-			continue;
-		}
-		
-		bool is_still_valid = false;
-		if (gss->scenes[i].so == so) {
-			is_still_valid = true;
-		}
-		for (int j = 0; j < ctx->objs_ct; j++) {
-			if (gss->scenes[i].so == ctx->objs[j]) {
-				is_still_valid = true;
-			}
+	// Drop stored scenes whose SurviveObject no longer exists (e.g. a tracker that was turned off and on again).
+	// Only the first min(scenes_cnt, N) slots hold scenes. Kept scenes are compacted to the front by swapping whole
+	// entries so each scene keeps its own pose and measurements and no meas buffer is shared or leaked.
+	size_t stored = gss->scenes_cnt < GSS_NUM_STORED_SCENES ? gss->scenes_cnt : GSS_NUM_STORED_SCENES;
+	size_t kept = 0;
+	for (size_t i = 0; i < stored; i++) {
+		bool is_still_valid = gss->scenes[i].so == so;
+		for (int j = 0; j < ctx->objs_ct && !is_still_valid; j++) {
+			is_still_valid = gss->scenes[i].so == ctx->objs[j];
 		}
 
 		if (is_still_valid) {
-			gss->scenes[free_idx].so = gss->scenes[i].so;
-			free_idx++;
+			if (kept != i) {
+				struct PoserDataGlobalScene tmp = gss->scenes[kept];
+				gss->scenes[kept] = gss->scenes[i];
+				gss->scenes[i] = tmp;
+			}
+			kept++;
 		} else {
-			SV_WARN("in GlobalSceneSolver: deleted scene %d with SurviveObject at adress &%p", i, (void* )so);
+			SV_WARN("in GlobalSceneSolver: deleted scene %d with SurviveObject at address %p", (int)i,
+					(void *)gss->scenes[i].so);
+			gss->scenes[i].so = NULL;
 		}
 	}
-	gss->scenes_cnt = free_idx;
+	// Only touch the ring position when something was actually removed
+	if (kept != stored)
+		gss->scenes_cnt = kept;
 
 	struct PoserDataGlobalScene *scene = &gss->scenes[gss->scenes_cnt % GSS_NUM_STORED_SCENES];
 
